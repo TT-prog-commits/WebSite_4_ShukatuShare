@@ -163,6 +163,9 @@
     position:fixed;z-index:50;background:var(--card);border:1px solid var(--border);
     border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.12);padding:10px;
     max-width:260px;
+    max-height:min(520px, calc(100vh - 24px));
+    overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
   }
   .popover .popover-title{font-size:11px;color:var(--text-sub);font-weight:700;margin:0 2px 8px;}
   .popover .stage-buttons button{font-size:12px;padding:6px 10px;}
@@ -656,6 +659,15 @@ function formatDate(iso){
   return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
 }
 
+function popoverStyle(rect){
+  const minHeight = 160;
+  const maxTop = Math.max(8, window.innerHeight - minHeight - 12);
+  const top = Math.min(rect.top, maxTop);
+  const availHeight = Math.max(minHeight, window.innerHeight - top - 12);
+  const left = Math.min(rect.left, Math.max(8, window.innerWidth - 268));
+  return `top:${top}px;left:${left}px;max-height:${availHeight}px;overflow-y:auto;`;
+}
+
 function el(tag, attrs={}, children=[]){
   const e = document.createElement(tag);
   for(const [k,v] of Object.entries(attrs)){
@@ -1118,7 +1130,7 @@ function renderCompanyManagePopover(){
 
   const pop = el("div", {
     class: "popover",
-    style: `top:${rect.top}px;left:${rect.left}px;`
+    style: popoverStyle(rect)
   });
   pop.appendChild(el("p", { class: "popover-title" }, company));
 
@@ -1197,7 +1209,7 @@ function renderRenamePopover(){
 
   const pop = el("div", {
     class: "popover",
-    style: `top:${rect.top}px;left:${rect.left}px;`
+    style: popoverStyle(rect)
   });
   pop.appendChild(el("p", { class: "popover-title" }, "自分の名前を変更"));
   const input = el("input", { type: "text", value: state.currentUser });
@@ -1247,7 +1259,7 @@ function renderMatrixPopover(){
 
   const pop = el("div", {
     class: "popover",
-    style: `top:${rect.top}px;left:${rect.left}px;`
+    style: popoverStyle(rect)
   });
   pop.appendChild(el("p", { class: "popover-title" }, `${company} のステージを更新`));
 
