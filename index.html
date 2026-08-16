@@ -220,12 +220,22 @@
   .result-summary .stat .lbl{font-size:12px;color:var(--text-sub);margin-top:2px;}
   .result-list{display:flex;flex-direction:column;gap:8px;}
   .result-item{
-    display:flex;align-items:center;gap:12px;border:1px solid var(--border);border-radius:12px;padding:12px 14px;
+    border:1px solid var(--border);border-radius:12px;padding:12px 14px;
   }
+  .result-item-row{display:flex;align-items:center;gap:12px;}
   .result-item .r-main{flex:1;min-width:0;}
   .result-item .r-company{font-weight:700;font-size:14px;}
   .result-item .r-sub{font-size:12px;color:var(--text-sub);margin-top:2px;}
   .result-item .r-date{font-size:11px;color:var(--text-sub);white-space:nowrap;}
+  .history-toggle{
+    border:none;background:none;color:var(--primary);font-size:11px;font-weight:600;cursor:pointer;padding:0;margin-top:8px;
+  }
+  .history-timeline{
+    margin-top:10px;padding-left:12px;border-left:2px solid var(--border);
+    display:flex;flex-direction:column;gap:7px;
+  }
+  .history-item{font-size:12px;color:var(--text-sub);}
+  .history-item .h-stage{font-weight:700;color:var(--text);margin-right:6px;}
 
   /* ---- update screen ---- */
   .company-row{
@@ -373,6 +383,7 @@ const state = {
   typeFilter: "", // "" = すべて, or "本選考" / "インターン"
   nameFormError: "",
   renamePopover: null, // { rect, error } while the "change my name" popover is open
+  expandedResults: new Set(), // recordKey strings whose 選考フロー timeline is expanded
 };
 
 const COMPANIES_PER_PAGE = 5;
@@ -533,10 +544,15 @@ async function deleteCompany(name){
 
 async function setRecord(member, company, stageKey){
   const key = recordKey(member, company);
-  state.records[key] = { ...(state.records[key] || {}), member, company, stage: stageKey, updatedAt: new Date().toISOString() };
+  const now = new Date().toISOString();
+  const existing = state.records[key] || {};
+  const historyEntry = { stage: stageKey, at: now };
+  const history = [...(existing.history || []), historyEntry];
+  state.records[key] = { ...existing, member, company, stage: stageKey, updatedAt: now, history };
   render();
   await firestoreFns.setDoc(recordDocRef(member, company), {
-    member, company, stage: stageKey, updatedAt: new Date().toISOString(),
+    member, company, stage: stageKey, updatedAt: now,
+    history: firestoreFns.arrayUnion(historyEntry),
   }, { merge: true });
 }
 
@@ -1310,7 +1326,7 @@ function renderResultsScreen(){
   Object.values(state.records).forEach(rec=>{
     if(!rec.stage || !RESULT_STAGE_KEYS.includes(rec.stage)) return;
     if(!companies.includes(rec.company)) return; // company may have been deleted
-    results.push({ member: rec.member, company: rec.company, stage: rec.stage, updatedAt: rec.updatedAt });
+    results.push({ member: rec.member, company: rec.company, stage: rec.stage, updatedAt: rec.updatedAt, history: rec.history || [] });
   });
   results.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 
@@ -1373,13 +1389,43 @@ function renderResultsScreen(){
     const list = el("div", { class: "result-list" });
     results.forEach(r=>{
       const s = STAGE_MAP[r.stage];
+      const rKey = recordKey(r.member, r.company);
+      const isExpanded = state.expandedResults.has(rKey);
+
       const item = el("div", { class: "result-item" });
+      const row = el("div", { class: "result-item-row" });
       const main = el("div", { class: "r-main" });
       main.appendChild(el("div", { class: "r-company" }, r.company));
       main.appendChild(el("div", { class: "r-sub" }, `${r.member} ・ ${getCompanyType(r.company)} ・ ${getCompanyIndustry(r.company)}`));
-      item.appendChild(main);
-      item.appendChild(el("span", { class: "stage-badge", style: `background:${s.color};color:#1f2937;` }, s.label));
-      item.appendChild(el("span", { class: "r-date" }, formatDate(r.updatedAt)));
+      row.appendChild(main);
+      row.appendChild(el("span", { class: "stage-badge", style: `background:${s.color};color:#1f2937;` }, s.label));
+      row.appendChild(el("span", { class: "r-date" }, formatDate(r.updatedAt)));
+      item.appendChild(row);
+
+      if(r.history.length > 0){
+        item.appendChild(el("button", {
+          class: "history-toggle",
+          onclick: ()=>{
+            if(isExpanded) state.expandedResults.delete(rKey);
+            else state.expandedResults.add(rKey);
+            render();
+          }
+        }, isExpanded ? "選考フローを閉じる ▲" : "これまでの選考フローを見る ▼"));
+
+        if(isExpanded){
+          const timeline = el("div", { class: "history-timeline" });
+          const sortedHistory = [...r.history].sort((a, b) => (a.at < b.at ? -1 : 1));
+          sortedHistory.forEach(h=>{
+            const hs = STAGE_MAP[h.stage];
+            const line = el("div", { class: "history-item" });
+            line.appendChild(el("span", { class: "h-stage" }, hs ? hs.label : h.stage));
+            line.appendChild(document.createTextNode(formatDate(h.at)));
+            timeline.appendChild(line);
+          });
+          item.appendChild(timeline);
+        }
+      }
+
       list.appendChild(item);
     });
     card.appendChild(list);
