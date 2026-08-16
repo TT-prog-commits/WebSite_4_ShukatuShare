@@ -372,6 +372,7 @@ const state = {
   industryFilter: "",
   typeFilter: "", // "" = すべて, or "本選考" / "インターン"
   nameFormError: "",
+  renamePopover: null, // { rect, error } while the "change my name" popover is open
 };
 
 const COMPANIES_PER_PAGE = 5;
@@ -463,6 +464,33 @@ async function addMember(name){
   state.members = [...state.members, name];
   render();
   await firestoreFns.setDoc(groupRef(), { members: firestoreFns.arrayUnion(name) }, { merge: true });
+}
+
+async function renameSelf(oldName, newName){
+  const relatedKeys = Object.keys(state.records).filter(k => state.records[k].member === oldName);
+
+  // Optimistic local update so the UI reflects the change immediately.
+  state.members = state.members.map(m => m === oldName ? newName : m);
+  relatedKeys.forEach(k=>{
+    const rec = state.records[k];
+    delete state.records[k];
+    state.records[recordKey(newName, rec.company)] = { ...rec, member: newName };
+  });
+  state.currentUser = newName;
+  sessionStorage.setItem(CURRENT_USER_KEY, newName);
+  setDeviceRegisteredName(newName);
+  render();
+
+  const writes = [firestoreFns.setDoc(groupRef(), { members: state.members }, { merge: true })];
+  for(const key of relatedKeys){
+    const sep = key.indexOf("___");
+    const company = key.slice(sep + 3);
+    const oldRef = recordDocRef(oldName, company);
+    const newData = { ...state.records[recordKey(newName, company)] };
+    writes.push(firestoreFns.setDoc(recordDocRef(newName, company), newData, { merge: true }));
+    writes.push(firestoreFns.deleteDoc(oldRef));
+  }
+  await Promise.all(writes);
 }
 
 async function addCompany(name, industry, type){
@@ -790,11 +818,21 @@ function renderApp(){
   chip.appendChild(document.createTextNode("あなた: "));
   chip.appendChild(el("b", {}, state.currentUser));
   chip.appendChild(el("button", {
+    onclick: (e)=>{
+      const r = e.currentTarget.getBoundingClientRect();
+      state.renamePopover = { rect: { top: r.bottom + 6, left: Math.max(8, r.left - 140) }, error: "" };
+      render();
+    }
+  }, "名前を変更"));
+  chip.appendChild(el("button", {
     onclick: ()=>{ state.currentUser = ""; sessionStorage.removeItem(CURRENT_USER_KEY); render(); }
   }, "切替"));
   chips.appendChild(chip);
   header.appendChild(chips);
   wrap.appendChild(header);
+  if(state.renamePopover){
+    wrap.appendChild(renderRenamePopover());
+  }
 
   const tabs = el("nav", { class: "tabs" });
   tabs.appendChild(el("button", {
@@ -1067,6 +1105,55 @@ function renderCompanyManagePopover(){
     }, "削除する"));
     pop.appendChild(row);
   }
+
+  frag.appendChild(pop);
+  return frag;
+}
+
+function renderRenamePopover(){
+  const frag = document.createDocumentFragment();
+  const { rect, error } = state.renamePopover;
+
+  frag.appendChild(el("div", {
+    class: "popover-overlay",
+    onclick: ()=>{ state.renamePopover = null; render(); }
+  }));
+
+  const pop = el("div", {
+    class: "popover",
+    style: `top:${rect.top}px;left:${rect.left}px;`
+  });
+  pop.appendChild(el("p", { class: "popover-title" }, "自分の名前を変更"));
+  const input = el("input", { type: "text", value: state.currentUser });
+  pop.appendChild(input);
+  if(error){
+    pop.appendChild(el("p", { class: "field-label", style: "color:var(--danger);" }, error));
+  }
+  pop.appendChild(el("button", {
+    class: "save-url-btn",
+    onclick: async ()=>{
+      const newName = input.value.trim();
+      const oldName = state.currentUser;
+      if(!newName){
+        state.renamePopover.error = "名前を入力してください。";
+        render();
+        return;
+      }
+      if(newName === oldName){
+        state.renamePopover = null;
+        render();
+        return;
+      }
+      if(state.members.includes(newName)){
+        state.renamePopover.error = "その名前はすでに使われています。";
+        render();
+        return;
+      }
+      state.renamePopover = null;
+      await renameSelf(oldName, newName);
+    }
+  }, "保存"));
+  pop.appendChild(el("p", { class: "empty-hint" }, "※ これまでの進捗データは新しい名前に引き継がれます。"));
 
   frag.appendChild(pop);
   return frag;
