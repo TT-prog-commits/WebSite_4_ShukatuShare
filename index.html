@@ -430,13 +430,14 @@ const state = {
   companyPage: 0,
   industryFilter: "",
   typeFilter: "", // "" = すべて, or "本選考" / "インターン"
+  entryFilter: "", // "" = すべて, "entered" = エントリー済みのみ, "not_entered" = 未エントリーのみ
   nameFormError: "",
   renamePopover: null, // { rect, error } while the "change my name" popover is open
   expandedResults: new Set(), // recordKey strings whose 選考フロー timeline is expanded
   editResetConfirm: new Set(), // company names currently showing the "reset flow" confirmation on the edit screen
 };
 
-const COMPANIES_PER_PAGE = 5;
+const COMPANIES_PER_PAGE = 50;
 
 let unsubGroup = null, unsubCompanies = null, unsubRecords = null;
 
@@ -1038,7 +1039,7 @@ function renderListScreen(){
   const container = document.createDocumentFragment();
   const card = el("div", { class: "card" });
   card.appendChild(el("h2", {}, "進捗一覧"));
-  card.appendChild(el("p", { class: "desc" }, "メンバー × 企業のマトリクス。セルの色で選考ステージがひと目でわかります。"));
+  card.appendChild(el("p", { class: "desc" }, "企業 × メンバーのマトリクス。セルの色で選考ステージがひと目でわかります。"));
 
   const members = state.members;
   const companies = companyNames();
@@ -1054,6 +1055,18 @@ function renderListScreen(){
       }, label));
     });
     card.appendChild(el("div", { class: "filter-bar" }, typeToggle));
+
+    const entryToggle = el("div", { class: "type-toggle" });
+    [["", "すべて"], ["entered", "エントリー済みのみ"], ["not_entered", "未エントリーのみ"]].forEach(([value, label])=>{
+      entryToggle.appendChild(el("button", {
+        class: state.entryFilter === value ? "active" : "",
+        onclick: ()=>{ state.entryFilter = value; state.companyPage = 0; render(); }
+      }, label));
+    });
+    const entryFilterBar = el("div", { class: "filter-bar" });
+    entryFilterBar.appendChild(el("label", {}, "自分の状況で絞り込み:"));
+    entryFilterBar.appendChild(entryToggle);
+    card.appendChild(entryFilterBar);
 
     const usedIndustries = Array.from(new Set(companies.map(c => getCompanyIndustry(c))));
     if(usedIndustries.length > 1){
@@ -1074,7 +1087,12 @@ function renderListScreen(){
 
     const filteredCompanies = companies
       .filter(c => !state.typeFilter || getCompanyType(c) === state.typeFilter)
-      .filter(c => !state.industryFilter || getCompanyIndustry(c) === state.industryFilter);
+      .filter(c => !state.industryFilter || getCompanyIndustry(c) === state.industryFilter)
+      .filter(c => {
+        if(!state.entryFilter) return true;
+        const hasStage = !!(getRecord(state.currentUser, c) && getRecord(state.currentUser, c).stage);
+        return state.entryFilter === "entered" ? hasStage : !hasStage;
+      });
 
     if(filteredCompanies.length === 0){
       card.appendChild(el("div", { class: "empty-state" }, "条件に合う企業はまだありません。"));
@@ -1088,52 +1106,53 @@ function renderListScreen(){
     const pageStart = state.companyPage * COMPANIES_PER_PAGE;
     const pageCompanies = filteredCompanies.slice(pageStart, pageStart + COMPANIES_PER_PAGE);
 
+    const stageMap = getStageMap();
     const tableWrap = el("div", { class: "table-wrap" });
     const table = el("table");
     const thead = el("thead");
     const headRow = el("tr");
-    headRow.appendChild(el("th", {}, "メンバー"));
-    pageCompanies.forEach(c => {
+    headRow.appendChild(el("th", {}, "企業"));
+    members.forEach(member => {
+      headRow.appendChild(el("th", {}, member === state.currentUser ? `${member}（あなた）` : member));
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = el("tbody");
+    pageCompanies.forEach(company=>{
+      const row = el("tr");
       const th = el("th", {});
       const nameRow = el("div", { class: "company-name-row" });
-      const url = getCompanyUrl(c);
+      const url = getCompanyUrl(company);
       if(url){
         nameRow.appendChild(el("a", {
           class: "company-name", href: url, target: "_blank", rel: "noopener noreferrer", title: url
-        }, c));
+        }, company));
       }else{
-        nameRow.appendChild(el("span", { class: "company-name" }, c));
+        nameRow.appendChild(el("span", { class: "company-name" }, company));
       }
       nameRow.appendChild(el("button", {
         class: "gear-btn",
         title: "企業の設定（URL・削除）",
         onclick: (e)=>{
           const r = e.currentTarget.getBoundingClientRect();
-          state.companyManage = { company: c, rect: { top: r.bottom + 6, left: Math.max(8, r.left - 120) }, confirmDelete: false };
+          state.companyManage = { company, rect: { top: r.bottom + 6, left: Math.max(8, r.left - 120) }, confirmDelete: false };
           render();
         }
       }, "⚙"));
       th.appendChild(nameRow);
       const tagRow = el("div", {});
       tagRow.appendChild(el("span", {
-        class: "type-tag " + (getCompanyType(c) === "インターン" ? "intern" : "main")
-      }, getCompanyType(c)));
-      tagRow.appendChild(el("span", { class: "industry-tag" }, getCompanyIndustry(c)));
+        class: "type-tag " + (getCompanyType(company) === "インターン" ? "intern" : "main")
+      }, getCompanyType(company)));
+      tagRow.appendChild(el("span", { class: "industry-tag" }, getCompanyIndustry(company)));
       th.appendChild(tagRow);
-      const updated = companyLastUpdated(c);
+      const updated = companyLastUpdated(company);
       th.appendChild(el("span", { class: "company-updated" }, updated ? `更新: ${formatDate(updated)}` : "未更新"));
-      headRow.appendChild(th);
-    });
-    thead.appendChild(headRow);
-    table.appendChild(thead);
+      row.appendChild(th);
 
-    const tbody = el("tbody");
-    members.forEach(member=>{
-      const isOwn = member === state.currentUser;
-      const row = el("tr");
-      row.appendChild(el("th", {}, member));
-      const stageMap = getStageMap();
-      pageCompanies.forEach(company=>{
+      members.forEach(member=>{
+        const isOwn = member === state.currentUser;
         const rec = getRecord(member, company);
         const hasStage = rec && rec.stage && stageMap[rec.stage];
         const td = el("td", { class: "stage-cell" + (isOwn ? " own" : "") });
@@ -1176,13 +1195,13 @@ function renderListScreen(){
       pager.appendChild(el("button", {
         disabled: state.companyPage === 0 ? "true" : null,
         onclick: ()=>{ if(state.companyPage > 0){ state.companyPage--; render(); } }
-      }, "‹ 前の5社"));
+      }, `‹ 前の${COMPANIES_PER_PAGE}社`));
       pager.appendChild(el("span", { class: "page-indicator" },
         `${state.companyPage + 1} / ${totalPages}（${filteredCompanies.length}社）`));
       pager.appendChild(el("button", {
         disabled: state.companyPage >= totalPages - 1 ? "true" : null,
         onclick: ()=>{ if(state.companyPage < totalPages - 1){ state.companyPage++; render(); } }
-      }, "次の5社 ›"));
+      }, `次の${COMPANIES_PER_PAGE}社 ›`));
       card.appendChild(pager);
     }
 
@@ -1196,7 +1215,7 @@ function renderListScreen(){
 
     if(members.includes(state.currentUser)){
       card.appendChild(el("p", { class: "desc", style: "margin-top:12px;margin-bottom:0;" },
-        "※ 自分の行のバッジをタップすると、その場でステージを更新できます。"));
+        "※ 自分の列のバッジをタップすると、その場でステージを更新できます。"));
     }
   }
 
