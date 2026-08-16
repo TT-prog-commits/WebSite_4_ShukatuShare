@@ -248,6 +248,17 @@
   }
   .cell-stack{display:flex;flex-direction:column;align-items:center;gap:4px;}
 
+  /* ---- selection flow reset (edit screen, outside popover) ---- */
+  .danger-btn{
+    padding:7px 12px;border-radius:8px;border:1px solid var(--danger);background:#fff;
+    color:var(--danger);font-weight:600;font-size:12px;cursor:pointer;
+  }
+  .danger-btn:hover{background:#fef2f2;}
+  .confirm-row-inline{display:flex;gap:8px;margin-top:8px;max-width:320px;}
+  .confirm-row-inline button{flex:1;padding:8px;border-radius:8px;font-weight:600;font-size:12.5px;cursor:pointer;}
+  .confirm-row-inline .confirm-yes{border:none;background:var(--danger);color:#fff;}
+  .confirm-row-inline .confirm-no{border:1px solid var(--border);background:#fff;color:var(--text);}
+
   /* ---- update screen ---- */
   .company-row{
     border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:10px;
@@ -395,6 +406,7 @@ const state = {
   nameFormError: "",
   renamePopover: null, // { rect, error } while the "change my name" popover is open
   expandedResults: new Set(), // recordKey strings whose 選考フロー timeline is expanded
+  editResetConfirm: new Set(), // company names currently showing the "reset flow" confirmation on the edit screen
 };
 
 const COMPANIES_PER_PAGE = 5;
@@ -632,6 +644,34 @@ async function setPreferred(member, company, preferred){
     await firestoreFns.setDoc(recordDocRef(member, company), { member, company, preferred: true }, { merge: true });
   }else{
     await firestoreFns.setDoc(recordDocRef(member, company), { member, company, preferred: firestoreFns.deleteField() }, { merge: true });
+  }
+}
+
+// 選考フロー（ステージ・更新日・これまでの選考フロー履歴）を完全にリセットする。
+// ログインID・選考優遇フラグは引き継ぐ（企業自体を削除するわけではないため）。
+async function resetFlow(member, company){
+  const key = recordKey(member, company);
+  const existing = state.records[key];
+  const kept = {};
+  if(existing){
+    if(existing.loginId) kept.loginId = existing.loginId;
+    if(existing.preferred) kept.preferred = existing.preferred;
+  }
+  const hasKept = Object.keys(kept).length > 0;
+  if(hasKept){
+    state.records[key] = { member, company, ...kept };
+  }else{
+    delete state.records[key];
+  }
+  render();
+
+  if(hasKept){
+    await firestoreFns.setDoc(recordDocRef(member, company), {
+      member, company, ...kept,
+      stage: firestoreFns.deleteField(), updatedAt: firestoreFns.deleteField(), history: firestoreFns.deleteField(),
+    }, { merge: true });
+  }else{
+    await firestoreFns.deleteDoc(recordDocRef(member, company));
   }
 }
 
@@ -1309,6 +1349,34 @@ function renderMatrixPopover(){
     }, s.label));
   });
   pop.appendChild(btnRow);
+
+  const hasFlowToReset = !!(rec && (rec.stage || (rec.history && rec.history.length > 0)));
+  if(hasFlowToReset){
+    pop.appendChild(el("hr", { class: "divider" }));
+    if(state.popover.confirmReset){
+      pop.appendChild(el("p", { class: "field-label", style: "color:var(--danger);" },
+        "選考フロー（現在のステージとこれまでの履歴）をリセットします。よろしいですか？"));
+      const row = el("div", { class: "confirm-row" });
+      row.appendChild(el("button", {
+        class: "confirm-no",
+        onclick: ()=>{ state.popover.confirmReset = false; render(); }
+      }, "キャンセル"));
+      row.appendChild(el("button", {
+        class: "confirm-yes",
+        onclick: ()=>{
+          resetFlow(state.currentUser, company);
+          state.popover = null;
+        }
+      }, "リセットする"));
+      pop.appendChild(row);
+    }else{
+      pop.appendChild(el("button", {
+        class: "delete-btn",
+        onclick: ()=>{ state.popover.confirmReset = true; render(); }
+      }, "選考フローをリセット"));
+    }
+  }
+
   frag.appendChild(pop);
   return frag;
 }
@@ -1398,6 +1466,35 @@ function renderEditScreen(){
         }, s.label));
       });
       row.appendChild(btnRow);
+
+      const hasFlowToReset = hasStage || (rec && rec.history && rec.history.length > 0);
+      if(hasFlowToReset){
+        const resetWrap = el("div", { style: "margin-top:10px;" });
+        if(state.editResetConfirm.has(company)){
+          resetWrap.appendChild(el("p", { class: "field-label", style: "color:var(--danger);" },
+            "選考フロー（現在のステージとこれまでの履歴）をリセットします。よろしいですか？"));
+          const confirmRow = el("div", { class: "confirm-row-inline" });
+          confirmRow.appendChild(el("button", {
+            class: "confirm-no",
+            onclick: ()=>{ state.editResetConfirm.delete(company); render(); }
+          }, "キャンセル"));
+          confirmRow.appendChild(el("button", {
+            class: "confirm-yes",
+            onclick: ()=>{
+              state.editResetConfirm.delete(company);
+              resetFlow(state.currentUser, company);
+            }
+          }, "リセットする"));
+          resetWrap.appendChild(confirmRow);
+        }else{
+          resetWrap.appendChild(el("button", {
+            class: "danger-btn",
+            onclick: ()=>{ state.editResetConfirm.add(company); render(); }
+          }, "選考フローをリセット"));
+        }
+        row.appendChild(resetWrap);
+      }
+
       updateCard.appendChild(row);
     });
   }
