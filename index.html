@@ -359,20 +359,39 @@ function setDeviceRegisteredName(name){
   localStorage.setItem(REGISTERED_NAME_PREFIX + state.groupCode, name);
 }
 
-const STAGES = [
+// 標準の選考ステージ（内定・お祈りより前の段階）
+const BASE_STAGES = [
   { key: "es",     label: "ES提出",   color: "var(--stage-es)" },
   { key: "web",    label: "Webテスト", color: "var(--stage-web)" },
   { key: "gd",     label: "GD",       color: "var(--stage-gd)" },
   { key: "1st",    label: "一次面接", color: "var(--stage-1st)" },
   { key: "2nd",    label: "二次面接", color: "var(--stage-2nd)" },
-  { key: "3rd",    label: "三次面接", color: "var(--stage-3rd)" },
-  { key: "4th",    label: "四次面接", color: "var(--stage-4th)" },
   { key: "final",  label: "最終面接", color: "var(--stage-final)" },
+];
+// 内定・お祈り（結果）。常に一覧の最後に固定表示する。
+const RESULT_STAGES = [
   { key: "offer",  label: "内定",     color: "var(--stage-offer)" },
   { key: "pray",   label: "お祈り",   color: "var(--stage-pray)" },
 ];
-const STAGE_MAP = Object.fromEntries(STAGES.map(s => [s.key, s]));
 const RESULT_STAGE_KEYS = ["offer", "pray"];
+
+// グループで追加したカスタム項目に割り当てる色のパレット（順番に使い回す）
+const CUSTOM_STAGE_COLORS = [
+  "#fde68a", "#fbcfe8", "#99f6e4", "#fed7aa", "#bae6fd", "#fecdd3", "#d9f99d", "#e9d5ff",
+];
+function colorForCustomStage(index){
+  return CUSTOM_STAGE_COLORS[index % CUSTOM_STAGE_COLORS.length];
+}
+
+// 標準ステージ + このグループが追加したカスタム項目 + 結果（内定・お祈り）を結合した、実際に表示するステージ一覧。
+// カスタム項目は state.customStages（Firestore上はこのグループのドキュメントにのみ保存）から都度組み立てる。
+function getStages(){
+  const custom = state.customStages.map((c, i) => ({ key: c.key, label: c.label, color: colorForCustomStage(i) }));
+  return [...BASE_STAGES, ...custom, ...RESULT_STAGES];
+}
+function getStageMap(){
+  return Object.fromEntries(getStages().map(s => [s.key, s]));
+}
 
 const INDUSTRIES = [
   "IT・通信", "メーカー", "商社", "金融", "コンサル",
@@ -397,8 +416,10 @@ const state = {
   groupCode: localStorage.getItem(GROUP_CODE_KEY) || "",
   currentUser: sessionStorage.getItem(CURRENT_USER_KEY) || "",
   members: [],
+  customStages: [], // このグループが追加したカスタム項目 [{ key, label, createdAt }]（グループのドキュメントにのみ保存される）
   companies: [], // [{ name, url, industry, createdAt }]
   records: {},   // recordKey -> { member, company, stage?, updatedAt?, loginId? }
+  addStageError: "",
   readyGroup: false,
   readyCompanies: false,
   readyRecords: false,
@@ -435,6 +456,7 @@ function connectToGroup(code){
   state.groupCode = code;
   localStorage.setItem(GROUP_CODE_KEY, code);
   state.members = [];
+  state.customStages = [];
   state.companies = [];
   state.records = {};
   state.readyGroup = false;
@@ -446,7 +468,9 @@ function connectToGroup(code){
   const { onSnapshot } = firestoreFns;
 
   unsubGroup = onSnapshot(groupRef(), (snap)=>{
-    state.members = (snap.exists() && snap.data().members) || [];
+    const data = snap.exists() ? snap.data() : {};
+    state.members = data.members || [];
+    state.customStages = data.customStages || [];
     state.readyGroup = true;
     render();
   }, handleError);
@@ -504,6 +528,26 @@ async function addMember(name){
   state.members = [...state.members, name];
   render();
   await firestoreFns.setDoc(groupRef(), { members: firestoreFns.arrayUnion(name) }, { merge: true });
+}
+
+function newCustomStageKey(){
+  return "custom_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
+}
+
+// 自分たちのグループだけで使う選考項目を追加する。このグループのドキュメントにのみ保存されるため、
+// 他のグループの一覧には影響しない。
+async function addCustomStage(label){
+  const trimmed = label.trim();
+  if(!trimmed) return { ok: false, error: "項目名を入力してください。" };
+  const existingLabels = getStages().map(s => s.label);
+  if(existingLabels.includes(trimmed)){
+    return { ok: false, error: "その項目名はすでに使われています。" };
+  }
+  const entry = { key: newCustomStageKey(), label: trimmed, createdAt: new Date().toISOString() };
+  state.customStages = [...state.customStages, entry];
+  render();
+  await firestoreFns.setDoc(groupRef(), { customStages: firestoreFns.arrayUnion(entry) }, { merge: true });
+  return { ok: true };
 }
 
 async function renameSelf(oldName, newName){
@@ -1088,12 +1132,13 @@ function renderListScreen(){
       const isOwn = member === state.currentUser;
       const row = el("tr");
       row.appendChild(el("th", {}, member));
+      const stageMap = getStageMap();
       pageCompanies.forEach(company=>{
         const rec = getRecord(member, company);
-        const hasStage = rec && rec.stage;
+        const hasStage = rec && rec.stage && stageMap[rec.stage];
         const td = el("td", { class: "stage-cell" + (isOwn ? " own" : "") });
-        const label = hasStage ? STAGE_MAP[rec.stage].label : "—";
-        const bg = hasStage ? STAGE_MAP[rec.stage].color : "var(--stage-none)";
+        const label = hasStage ? stageMap[rec.stage].label : "—";
+        const bg = hasStage ? stageMap[rec.stage].color : "var(--stage-none)";
         const color = hasStage ? "#1f2937" : "var(--stage-none-text)";
         const badgeAttrs = {
           class: "stage-badge",
@@ -1143,7 +1188,7 @@ function renderListScreen(){
 
     const legend = el("div", { class: "legend" });
     legend.appendChild(el("span", { class: "stage-badge", style: "background:var(--stage-none);color:var(--stage-none-text);" }, "未エントリー"));
-    STAGES.forEach(s=>{
+    getStages().forEach(s=>{
       legend.appendChild(el("span", { class: "stage-badge", style: `background:${s.color};color:#1f2937;` }, s.label));
     });
     legend.appendChild(el("span", { class: "preferred-badge" }, "優遇"));
@@ -1342,7 +1387,7 @@ function renderMatrixPopover(){
       render();
     }
   }, "未エントリー"));
-  STAGES.forEach(s=>{
+  getStages().forEach(s=>{
     const selected = rec && rec.stage === s.key;
     btnRow.appendChild(el("button", {
       class: selected ? "selected" : "",
@@ -1429,6 +1474,42 @@ function renderEditScreen(){
   addCard.appendChild(form);
   container.appendChild(addCard);
 
+  const stageCard = el("div", { class: "card" });
+  stageCard.appendChild(el("h2", {}, "選考項目を追加"));
+  stageCard.appendChild(el("p", { class: "desc" },
+    "「GD」「グループワーク」のように、既定の項目（ES提出・Webテストなど）に無いステージを追加できます。追加した項目はこのグループだけで使え、他のグループには表示されません。"));
+
+  if(state.customStages.length > 0){
+    const chipWrap = el("div", { style: "display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;" });
+    state.customStages.forEach((c, i)=>{
+      chipWrap.appendChild(el("span", {
+        class: "stage-badge", style: `background:${colorForCustomStage(i)};color:#1f2937;`
+      }, c.label));
+    });
+    stageCard.appendChild(chipWrap);
+  }
+
+  const stageForm = el("div", { class: "add-company-form" });
+  const stageInput = el("input", { type: "text", placeholder: "項目名を入力（例：グループワーク）" });
+  stageForm.appendChild(stageInput);
+  stageForm.appendChild(el("button", {
+    onclick: async ()=>{
+      const result = await addCustomStage(stageInput.value);
+      if(result.ok){
+        stageInput.value = "";
+        state.addStageError = "";
+      }else{
+        state.addStageError = result.error;
+      }
+      render();
+    }
+  }, "項目を追加"));
+  stageCard.appendChild(stageForm);
+  if(state.addStageError){
+    stageCard.appendChild(el("p", { class: "empty-hint", style: "color:var(--danger);" }, state.addStageError));
+  }
+  container.appendChild(stageCard);
+
   const updateCard = el("div", { class: "card" });
   updateCard.appendChild(el("h2", {}, "自分の選考ステージを更新"));
   updateCard.appendChild(el("p", { class: "desc" }, `${state.currentUser} さんの各企業のステージをタップして更新してください。`));
@@ -1463,7 +1544,7 @@ function renderEditScreen(){
       row.appendChild(prefRow);
 
       const btnRow = el("div", { class: "stage-buttons" });
-      STAGES.forEach(s=>{
+      getStages().forEach(s=>{
         const selected = hasStage && rec.stage === s.key;
         btnRow.appendChild(el("button", {
           class: selected ? "selected" : "",
@@ -1581,9 +1662,10 @@ function renderResultsScreen(){
   if(results.length === 0){
     card.appendChild(el("div", { class: "empty-state" }, "まだ内定・お祈りの結果はありません。"));
   }else{
+    const resultStageMap = getStageMap();
     const list = el("div", { class: "result-list" });
     results.forEach(r=>{
-      const s = STAGE_MAP[r.stage];
+      const s = resultStageMap[r.stage];
       const rKey = recordKey(r.member, r.company);
       const isExpanded = state.expandedResults.has(rKey);
 
@@ -1611,7 +1693,7 @@ function renderResultsScreen(){
           const timeline = el("div", { class: "history-timeline" });
           const sortedHistory = [...r.history].sort((a, b) => (a.at < b.at ? -1 : 1));
           sortedHistory.forEach(h=>{
-            const hs = STAGE_MAP[h.stage];
+            const hs = resultStageMap[h.stage];
             const line = el("div", { class: "history-item" });
             line.appendChild(el("span", { class: "h-stage" }, hs ? hs.label : h.stage));
             line.appendChild(document.createTextNode(formatDate(h.at)));
