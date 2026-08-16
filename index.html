@@ -24,6 +24,7 @@
     --stage-final:#3b82f6;
     --stage-offer:#22c55e;
     --stage-pray:#fca5a5;
+    --stage-preferred:#ddd6fe;
   }
   *{box-sizing:border-box;}
   body{
@@ -236,6 +237,13 @@
   }
   .history-item{font-size:12px;color:var(--text-sub);}
   .history-item .h-stage{font-weight:700;color:var(--text);margin-right:6px;}
+
+  /* ---- selection preference (優遇) badge ---- */
+  .preferred-badge{
+    display:inline-block;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;
+    background:var(--stage-preferred);color:#5b21b6;
+  }
+  .cell-stack{display:flex;flex-direction:column;align-items:center;gap:4px;}
 
   /* ---- update screen ---- */
   .company-row{
@@ -524,7 +532,30 @@ async function setCompanyIndustry(name, industry){
 }
 
 async function setCompanyType(name, type){
+  const prevType = getCompanyType(name);
   await firestoreFns.setDoc(companyDocRef(name), { name, type }, { merge: true });
+
+  // インターン → 本選考 に変わったら、これまでの選考ステージ（インターンの選考分）はリセットする
+  if(prevType === "インターン" && type === "本選考"){
+    const relatedKeys = Object.keys(state.records).filter(k => state.records[k].company === name);
+    const writes = [];
+    relatedKeys.forEach(key=>{
+      const rec = state.records[key];
+      if(!rec.stage) return;
+      const kept = { member: rec.member, company: rec.company };
+      if(rec.loginId) kept.loginId = rec.loginId;
+      if(rec.preferred) kept.preferred = rec.preferred;
+      state.records[key] = kept;
+      writes.push(firestoreFns.setDoc(recordDocRef(rec.member, rec.company), {
+        member: rec.member, company: rec.company,
+        stage: firestoreFns.deleteField(), updatedAt: firestoreFns.deleteField(), history: firestoreFns.deleteField(),
+      }, { merge: true }));
+    });
+    if(writes.length > 0){
+      render();
+      await Promise.all(writes);
+    }
+  }
 }
 
 async function deleteCompany(name){
@@ -560,17 +591,20 @@ async function clearStage(member, company){
   const key = recordKey(member, company);
   const existing = state.records[key];
   if(!existing) return;
-  const hadLoginId = !!existing.loginId;
-  if(hadLoginId){
-    state.records[key] = { member, company, loginId: existing.loginId };
+  const kept = {};
+  if(existing.loginId) kept.loginId = existing.loginId;
+  if(existing.preferred) kept.preferred = existing.preferred;
+  const hasKept = Object.keys(kept).length > 0;
+  if(hasKept){
+    state.records[key] = { member, company, ...kept };
   }else{
     delete state.records[key];
   }
   render();
 
-  if(hadLoginId){
+  if(hasKept){
     await firestoreFns.setDoc(recordDocRef(member, company), {
-      member, company, loginId: existing.loginId,
+      member, company, ...kept,
       stage: firestoreFns.deleteField(), updatedAt: firestoreFns.deleteField(),
     }, { merge: true });
   }else{
@@ -578,10 +612,30 @@ async function clearStage(member, company){
   }
 }
 
+async function setPreferred(member, company, preferred){
+  const key = recordKey(member, company);
+  const existing = state.records[key];
+  if(!preferred && !(existing && (existing.stage || existing.loginId))){
+    if(existing){
+      delete state.records[key];
+      render();
+      await firestoreFns.deleteDoc(recordDocRef(member, company));
+    }
+    return;
+  }
+  state.records[key] = { ...(existing || {}), member, company, preferred };
+  render();
+  if(preferred){
+    await firestoreFns.setDoc(recordDocRef(member, company), { member, company, preferred: true }, { merge: true });
+  }else{
+    await firestoreFns.setDoc(recordDocRef(member, company), { member, company, preferred: firestoreFns.deleteField() }, { merge: true });
+  }
+}
+
 async function setLoginId(member, company, loginId){
   const key = recordKey(member, company);
   const existing = state.records[key];
-  if(!loginId && !(existing && existing.stage)){
+  if(!loginId && !(existing && (existing.stage || existing.preferred))){
     delete state.records[key];
     render();
     await firestoreFns.deleteDoc(recordDocRef(member, company));
@@ -991,16 +1045,21 @@ function renderListScreen(){
         if(hasStage) titleParts.push(formatDate(rec.updatedAt));
         if(rec && rec.loginId) titleParts.push(`ID: ${rec.loginId}`);
         if(titleParts.length) badgeAttrs.title = titleParts.join(" ・ ");
+        const cellStack = el("div", { class: "cell-stack" });
         if(isOwn){
           badgeAttrs.onclick = (e)=>{
             const r = e.currentTarget.getBoundingClientRect();
             state.popover = { company, rect: { top: r.bottom + 6, left: r.left } };
             render();
           };
-          td.appendChild(el("button", badgeAttrs, label));
+          cellStack.appendChild(el("button", badgeAttrs, label));
         }else{
-          td.appendChild(el("span", badgeAttrs, label));
+          cellStack.appendChild(el("span", badgeAttrs, label));
         }
+        if(rec && rec.preferred){
+          cellStack.appendChild(el("span", { class: "preferred-badge" }, "優遇"));
+        }
+        td.appendChild(cellStack);
         row.appendChild(td);
       });
       tbody.appendChild(row);
@@ -1029,6 +1088,7 @@ function renderListScreen(){
     STAGES.forEach(s=>{
       legend.appendChild(el("span", { class: "stage-badge", style: `background:${s.color};color:#1f2937;` }, s.label));
     });
+    legend.appendChild(el("span", { class: "preferred-badge" }, "優遇"));
     card.appendChild(legend);
 
     if(members.includes(state.currentUser)){
@@ -1201,6 +1261,17 @@ function renderMatrixPopover(){
       render();
     }
   }, "IDを保存"));
+
+  pop.appendChild(el("label", { class: "field-label" }, "選考優遇"));
+  const prefRow = el("div", { class: "stage-buttons" });
+  const isPreferred = !!(rec && rec.preferred);
+  prefRow.appendChild(el("button", {
+    class: isPreferred ? "selected" : "",
+    style: isPreferred ? "background:var(--stage-preferred);border-color:var(--stage-preferred);" : "",
+    onclick: ()=>{ setPreferred(state.currentUser, company, !isPreferred); }
+  }, isPreferred ? "優遇あり ✓" : "優遇なし（タップでON）"));
+  pop.appendChild(prefRow);
+
   pop.appendChild(el("hr", { class: "divider" }));
 
   const btnRow = el("div", { class: "stage-buttons" });
@@ -1295,6 +1366,15 @@ function renderEditScreen(){
       idInput.addEventListener("blur", ()=>{ setLoginId(state.currentUser, company, idInput.value.trim()); });
       idRow.appendChild(idInput);
       row.appendChild(idRow);
+
+      const isPreferred = !!(rec && rec.preferred);
+      const prefRow = el("div", { class: "stage-buttons", style: "margin-bottom:10px;" });
+      prefRow.appendChild(el("button", {
+        class: isPreferred ? "selected" : "",
+        style: isPreferred ? "background:var(--stage-preferred);border-color:var(--stage-preferred);" : "",
+        onclick: ()=>{ setPreferred(state.currentUser, company, !isPreferred); }
+      }, isPreferred ? "選考優遇あり ✓" : "選考優遇（タップでON）"));
+      row.appendChild(prefRow);
 
       const btnRow = el("div", { class: "stage-buttons" });
       STAGES.forEach(s=>{
