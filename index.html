@@ -352,6 +352,13 @@ const GROUP_CODE_KEY = "syukatu_group_code_v1";
 const CURRENT_USER_KEY = "syukatu_current_user_v1";
 const REGISTERED_NAME_PREFIX = "syukatu_registered_name_";
 
+// 開発者だけがグループ（ルーム）の作成数を確認できる隠し機能。
+// URL に ?dev=<このトークン> を付けてアクセスした場合のみ、画面右下に件数バッジが表示される。
+// このトークンを知らない一般ユーザーには一切見えない。
+const DEV_ACCESS_TOKEN = "k8f3h6hkl2u4ko20";
+const isDevMode = new URLSearchParams(location.search).get("dev") === DEV_ACCESS_TOKEN;
+function statsRef(){ return firestoreFns.doc(db, "meta", "stats"); }
+
 function getDeviceRegisteredName(){
   return localStorage.getItem(REGISTERED_NAME_PREFIX + state.groupCode) || "";
 }
@@ -435,6 +442,7 @@ const state = {
   renamePopover: null, // { rect, error } while the "change my name" popover is open
   expandedResults: new Set(), // recordKey strings whose 選考フロー timeline is expanded
   editResetConfirm: new Set(), // company names currently showing the "reset flow" confirmation on the edit screen
+  devGroupCount: null, // 開発者モード（?dev=...）のときだけ使う、これまでに作られたグループ数
 };
 
 const COMPANIES_PER_PAGE = 50;
@@ -528,7 +536,16 @@ async function addMember(name){
   if(state.members.includes(name)) return;
   state.members = [...state.members, name];
   render();
-  await firestoreFns.setDoc(groupRef(), { members: firestoreFns.arrayUnion(name) }, { merge: true });
+  // このグループのドキュメントがまだ存在しない＝新規ルームが作られた瞬間なので、
+  // その場合だけ開発者用の集計（meta/stats.groupCount）を+1する。
+  await firestoreFns.runTransaction(db, async (tx)=>{
+    const snap = await tx.get(groupRef());
+    const isNewGroup = !snap.exists();
+    tx.set(groupRef(), { members: firestoreFns.arrayUnion(name) }, { merge: true });
+    if(isNewGroup){
+      tx.set(statsRef(), { groupCount: firestoreFns.increment(1) }, { merge: true });
+    }
+  });
 }
 
 function newCustomStageKey(){
@@ -793,6 +810,25 @@ function render(){
   }else{
     root.appendChild(renderApp());
   }
+  if(isDevMode){
+    root.appendChild(renderDevBadge());
+  }
+}
+
+function renderDevBadge(){
+  const count = state.devGroupCount === null ? "…" : state.devGroupCount;
+  return el("div", {
+    style: "position:fixed;right:10px;bottom:10px;z-index:100;background:#111827;color:#fff;"
+      + "padding:6px 12px;border-radius:999px;font-size:11px;font-weight:700;opacity:.85;"
+  }, `[dev] 作成済みルーム数: ${count}`);
+}
+
+function subscribeDevStats(){
+  if(!isDevMode || !firestoreFns) return;
+  firestoreFns.onSnapshot(statsRef(), (snap)=>{
+    state.devGroupCount = (snap.exists() && snap.data().groupCount) || 0;
+    render();
+  }, (err)=>{ console.error("dev stats error", err); });
 }
 
 /* ---------------- Setup screen (Firebase not configured) ---------------- */
@@ -822,6 +858,11 @@ service cloud.firestore {
       match /{document=**} {
         allow read, write: if true;
       }
+    }
+
+    match /meta/{document} {
+      allow get, write: if true;
+      allow list: if false;
     }
   }
 }</pre>
@@ -1735,6 +1776,9 @@ function renderResultsScreen(){
 render();
 if(!FIREBASE_NOT_CONFIGURED && state.groupCode){
   connectToGroup(state.groupCode);
+}
+if(!FIREBASE_NOT_CONFIGURED){
+  subscribeDevStats();
 }
 </script>
 </body>

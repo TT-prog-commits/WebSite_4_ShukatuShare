@@ -52,11 +52,21 @@
            allow read, write: if true;
          }
        }
+
+       match /meta/{document} {
+         allow get, write: if true;
+         allow list: if false;
+       }
      }
    }
    ```
 
 4. リポジトリの Settings → Pages で GitHub Actions を使って公開
+
+## 開発者向け機能
+
+- URL に `?dev=<秘密トークン>` を付けてアクセスすると、画面右下に「これまでに作られたグループ（ルーム）数」が小さく表示されます。トークンは `index.html` 内の `DEV_ACCESS_TOKEN` で確認・変更できます。この値を知らない一般ユーザーの画面には何も表示されません。
+- 集計値は `meta/stats` ドキュメントの `groupCount` フィールドに保存され、新しいグループが最初に作られた瞬間だけ+1されます。
 
 ## 注意事項
 
